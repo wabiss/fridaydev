@@ -9,7 +9,7 @@ if not COOKIE_STR:
     print("❌ 错误: 未检测到 COOKIE 环境变量，请在 GitHub Secrets 中配置 COOKIE")
     sys.exit(1)
 
-# 解析 Cookie 字符串为 Playwright 适用的格式
+# 解析 Cookie
 cookies = []
 for item in COOKIE_STR.split(";"):
     if "=" in item:
@@ -37,46 +37,56 @@ def run():
             viewport={"width": 1920, "height": 1080}
         )
 
-        # 注入 Cookie 实现免登录
         context.add_cookies(cookies)
         page = context.new_page()
 
-        print("1. 正在带 Cookie 直接访问服务页面...")
+        print("1. 正在带 Cookie 访问服务页面...")
         page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
-        time.sleep(6)  # 等待页面 JS 渲染卡片
+        time.sleep(5)  # 等待数据加载
 
         page_text = page.inner_text("body")
 
-        # 检查是否成功登录并进入服务页
         if "Mes services" in page_text or "wabiss" in page_text:
             print("✅ Cookie 验证有效，已成功进入服务管理页面！")
         else:
-            print("⚠️ 未能在页面中找到服务信息，可能是 Cookie 失效或已被重定向，请检查生成的截图。")
+            print("⚠️ 未识别到服务管理页面，可能 Cookie 已过期，请检查截图。")
+            page.screenshot(path="result.png", full_page=True)
+            browser.close()
+            return
 
-        # 检查续期按钮状态
-        print("2. 正在检查续期状态...")
-        renew_btn = page.locator("button:has-text('Renouveler'), a:has-text('Renouveler')")
+        print("2. 正在检查续期按钮状态...")
+
+        # 精确匹配可续期按钮（仅匹配 Renouveler，排除 Résilier/Supprimer 等危险按钮）
+        renew_btn = page.locator("button:text-is('Renouveler'), a:text-is('Renouveler'), button:has-text('Renouveler'):not(:has-text('dans'))")
         not_yet_btn = page.locator("text=/Renouvelable dans \\d+ jour\\(s\\)/i")
 
         if renew_btn.count() > 0 and renew_btn.first.is_visible():
-            print("🎉 检测到可续期按钮，正在执行点击...")
+            print("🎉 检测到【Renouveler】续期按钮，正在点击...")
+            # 点击续期按钮
             renew_btn.first.click()
             time.sleep(3)
-            
-            # 若有二次确认弹窗，尝试点击确认
-            confirm_btn = page.locator("button:has-text('Confirmer'), button:has-text('Valider'), button:has-text('Oui')")
-            if confirm_btn.count() > 0 and confirm_btn.first.is_visible():
-                confirm_btn.first.click()
-                time.sleep(2)
-            print("✅ 续期操作执行完毕！")
-        elif not_yet_btn.count() > 0:
-            print(f"ℹ️ 当前服务尚未到达可续期时间，状态提示: {not_yet_btn.first.inner_text()}")
-        else:
-            print("ℹ️ 未找到续期按钮（可能尚未到期或页面元素发生变动），请查看保存的截图。")
 
-        # 截取最终画面保存
+            # 仅在弹出专门的续期确认弹窗且可见时才尝试点击确认，避开删除弹窗
+            try:
+                modal_confirm = page.locator(".modal.show button, .modal.active button, .swal2-confirm").filter(has_not_text="suppression").filter(has_not_text="Résilier")
+                if modal_confirm.count() > 0 and modal_confirm.first.is_visible():
+                    modal_confirm.first.click(timeout=3000)
+                    print("✅ 已点击弹窗确认")
+                    time.sleep(2)
+            except Exception:
+                pass
+
+            print("✅ 续期操作执行完成！")
+
+        elif not_yet_btn.count() > 0:
+            status_text = not_yet_btn.first.inner_text()
+            print(f"ℹ️ 当前不可续期，状态提示: 【{status_text}】")
+        else:
+            print("ℹ️ 未发现续期动作按钮，请查看截图。")
+
+        # 截图保存当前最终状态
         page.screenshot(path="result.png", full_page=True)
-        print("📸 截图已保存至 result.png")
+        print("📸 最终截图已保存至 result.png")
         browser.close()
 
 if __name__ == "__main__":
