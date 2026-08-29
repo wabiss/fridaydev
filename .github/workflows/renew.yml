@@ -2,9 +2,9 @@ name: Auto Renew FridayDev Service
 
 on:
   schedule:
-    # 每天 UTC 02:00（北京时间 10:00）运行一次
+    # 每天 UTC 02:00（北京时间 10:00）自动执行
     - cron: '0 2 * * *'
-  # 支持手动在 Actions 页面点击 "Run workflow" 测试
+  # 支持在 GitHub 网页手动点击触发
   workflow_dispatch:
 
 jobs:
@@ -27,8 +27,7 @@ jobs:
 
       - name: Run Auto Renew Script
         env:
-          USERNAME: ${{ secrets.USERNAME }}
-          PASSWORD: ${{ secrets.PASSWORD }}
+          COOKIE: ${{ secrets.COOKIE }}
         run: |
           python renew.py
 
