@@ -1,0 +1,40 @@
+name: Auto Renew FridayDev Service
+
+on:
+  schedule:
+    # 每天 UTC 02:00（北京时间 10:00）运行一次
+    - cron: '0 2 * * *'
+  # 支持手动在 Actions 页面点击 "Run workflow" 测试
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run Auto Renew Script
+        env:
+          USERNAME: ${{ secrets.USERNAME }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+        run: |
+          python renew.py
+
+      - name: Upload Screenshot Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: execution-screenshot
+          path: result.png
