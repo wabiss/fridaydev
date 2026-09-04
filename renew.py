@@ -21,16 +21,14 @@ for item in COOKIE_STR.split(";"):
             "path": "/"
         })
 
-def extract_renewal_date(page):
-    """提取到期时间 DD/MM/YYYY"""
+def extract_dates(page):
+    """提取页面上的所有日期 (DD/MM/YYYY)"""
     try:
         text = page.inner_text("body")
-        match = re.search(r"Renouvellement\s*:\s*(\d{2}/\d{2}/\d{4})", text)
-        if match:
-            return match.group(1)
+        dates = re.findall(r"\b\d{2}/\d{2}/\d{4}\b", text)
+        return dates
     except Exception:
-        pass
-    return None
+        return []
 
 def run():
     with sync_playwright() as p:
@@ -53,30 +51,50 @@ def run():
 
         page_text = page.inner_text("body")
         if "Mes services" not in page_text and "wabiss" not in page_text:
-            print("❌ Cookie 已失效，请重新更新 Secrets 中的 COOKIE")
+            print("❌ Cookie 已失效，请更新 Secrets 中的 COOKIE")
             page.screenshot(path="result.png", full_page=True)
             browser.close()
             sys.exit(1)
 
         print("✅ Cookie 有效，进入服务列表！")
 
-        current_expiry = extract_renewal_date(page)
-        print(f"📅 当前到期时间为: 【{current_expiry or '未知'}】")
+        # 自动点击底部 Cookie 授权按钮（如果有）
+        try:
+            accept_cookie_btn = page.locator("button:has-text('Accepter')")
+            if accept_cookie_btn.count() > 0 and accept_cookie_btn.first.is_visible():
+                accept_cookie_btn.first.click()
+                print("🍪 已关闭底部 Cookie 提示条")
+                time.sleep(1)
+        except Exception:
+            pass
 
-        print("2. 正在精确判断续期按钮...")
+        old_dates = extract_dates(page)
+        print(f"📅 当前页面检测到日期: {old_dates}")
 
-        # 精确匹配可续期按钮（以 Renouveler 开头，例如 "Renouveler", "Renouveler gratuitement (5 jours)"）
-        # 排除倒计时按钮 "Renouvelable dans..."
-        renew_btn = page.locator("button:has-text('Renouveler'), a:has-text('Renouveler')").filter(has_not_text="Renouvelable dans")
+        print("2. 正在精确定位卡片中的续期按钮...")
+
+        # 1. 优先匹配 "Renouveler gratuitement"（免费续期）
+        # 2. 其次匹配纯 "Renouveler" 按钮
+        # 3. 坚决排除 "À renouveler" (顶部标签) 和 "Renouvelable dans" (倒计时)
+        renew_btn = page.locator("button, a").filter(
+            has_text=re.compile(r"Renouveler\s+gratuitement|^Renouveler$", re.I)
+        ).filter(
+            has_not_text="À renouveler"
+        ).filter(
+            has_not_text="Renouvelable dans"
+        )
+
         not_yet_btn = page.locator("text=/Renouvelable dans \\d+ jour/i")
 
         if renew_btn.count() > 0 and renew_btn.first.is_visible():
-            btn_text = renew_btn.first.inner_text().strip()
-            print(f"🎉【检测到可续期按钮】: 【{btn_text}】，正在执行点击续期...")
+            target_text = renew_btn.first.inner_text().strip()
+            print(f"🎉【成功锁定续期按钮】: 【{target_text}】，正在执行点击！")
+            
+            # 点击续费按钮
             renew_btn.first.click()
             time.sleep(4)
 
-            # 确认弹窗处理（排除危险按钮）
+            # 确认弹窗处理（如果有）
             try:
                 modal_confirm = page.locator(".modal.show button, .modal.active button, .swal2-confirm, button:has-text('Confirmer'), button:has-text('Valider')").filter(has_not_text="suppression").filter(has_not_text="Résilier")
                 if modal_confirm.count() > 0 and modal_confirm.first.is_visible():
@@ -86,31 +104,29 @@ def run():
             except Exception:
                 pass
 
-            # 刷新页面验证
-            print("3. 正在刷新页面验证续期结果...")
+            # 刷新页面验证结果
+            print("3. 正在刷新页面验证结果...")
             page.reload(wait_until="domcontentloaded")
             time.sleep(5)
 
-            new_expiry = extract_renewal_date(page)
+            new_dates = extract_dates(page)
             new_page_text = page.inner_text("body")
             
-            print(f"📅 续期后到期时间为: 【{new_expiry or '未知'}】")
+            print(f"📅 刷新后页面日期: {new_dates}")
 
-            if "Actif" in new_page_text:
-                print("🎉 服务状态已恢复为: 【Actif (正常运行)】")
-
-            if current_expiry and new_expiry and current_expiry != new_expiry:
-                print(f"🎉 续期成功！到期时间已更新: {current_expiry} ➔ {new_expiry}")
+            if "Actif" in new_page_text and "Suspendu" not in new_page_text:
+                print("🎉🎉 成功！服务状态已由暂停恢复为 【Actif (正常运行)】！")
+            elif "Renouvelable dans" in new_page_text:
+                print("🎉🎉 续期成功！按钮已进入下一次续期倒计时状态。")
             else:
-                print("✅ 续期点击完成，请查看最终截图。")
+                print("✅ 续期流程已完成，请查看最终截图确认。")
 
         elif not_yet_btn.count() > 0:
             status_text = not_yet_btn.first.inner_text().strip()
-            print(f"🔒【暂不可续期】倒计时提示: 【{status_text}】")
+            print(f"🔒【暂不可续期】倒计时状态: 【{status_text}】")
         else:
-            print("ℹ️ 未发现续期按钮，当前可能已在最新状态。")
+            print("ℹ️ 未发现续期按钮，当前可能已成功续期。")
 
-        # 截图留存
         page.screenshot(path="result.png", full_page=True)
         print("📸 最终截图已保存至 result.png")
         browser.close()
