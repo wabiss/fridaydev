@@ -34,14 +34,18 @@ def run():
         print("🚀 启动无头浏览器...")
         browser = p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled"
+            ]
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080}
         )
 
-        # 自动接受浏览器的原生 confirm/alert 弹窗
+        # 自动接受原生 alert / confirm 弹窗
         context.on("dialog", lambda dialog: (print(f"🔔 触发原生弹窗: {dialog.message}"), dialog.accept()))
 
         context.add_cookies(cookies)
@@ -60,11 +64,12 @@ def run():
 
         print("✅ Cookie 有效，进入后台！")
 
-        # 自动关闭 Cookie 提示
+        # 自动关闭 Cookie 提示条
         try:
             accept_btn = page.locator("button:has-text('Accepter')")
             if accept_btn.count() > 0 and accept_btn.first.is_visible():
                 accept_btn.first.click()
+                print("🍪 已关闭底部 Cookie 提示条")
                 time.sleep(1)
         except Exception:
             pass
@@ -72,7 +77,7 @@ def run():
         old_dates = extract_dates(page)
         print(f"📅 点击前页面日期: {old_dates}")
 
-        # 定位续期按钮
+        # 锁定续期按钮（排除顶部 À renouveler 标签）
         renew_btn = page.locator("button, a").filter(
             has_text=re.compile(r"Renouveler\s+gratuitement", re.I)
         )
@@ -80,16 +85,16 @@ def run():
         if renew_btn.count() > 0 and renew_btn.first.is_visible():
             target_text = renew_btn.first.inner_text().strip()
             print(f"🎉 正在点击续期按钮: 【{target_text}】...")
-            
-            # 点击续期按钮
+
+            # 1. 点击续期按钮
             renew_btn.first.click()
             time.sleep(2)
 
-            # 保存点击后的实时截图，查看是否有弹窗弹出
+            # 2. 保存点击后的瞬间截图，便于排查是否有弹窗
             page.screenshot(path="after_click.png", full_page=True)
             print("📸 已保存点击后的瞬间截图至 after_click.png")
 
-            # 智能检测并点击弹窗中的确认按钮（排除删除相关）
+            # 3. 智能检测并确认弹窗按钮（排除删除/取消类操作）
             confirm_selectors = [
                 ".modal button:visible",
                 "[role='dialog'] button:visible",
@@ -105,7 +110,6 @@ def run():
                 for el in elements:
                     try:
                         el_text = el.inner_text().strip()
-                        # 避免误点取消或关闭
                         if el_text and not any(k in el_text.lower() for k in ["annuler", "fermer", "close", "cancel", "supprimer", "suppression", "résilier"]):
                             print(f"👉 检测到确认弹窗/按钮: 【{el_text}】，正在点击确认...")
                             el.click(timeout=3000)
@@ -114,10 +118,10 @@ def run():
                     except Exception:
                         pass
 
-            # 等待网络请求完成
+            # 等待接口响应
             time.sleep(5)
 
-            # 刷新页面验证
+            # 4. 刷新页面验证结果
             print("2. 正在刷新页面验证最新状态...")
             page.reload(wait_until="domcontentloaded")
             time.sleep(5)
@@ -127,7 +131,7 @@ def run():
             print(f"📅 刷新后页面日期: {new_dates}")
 
             if "Renouvelable dans" in new_page_text:
-                print("🎉🎉 续期成功！已进入下一次倒计时状态！")
+                print("🎉🎉 续期成功！按钮已进入下一次倒计时状态！")
             elif old_dates != new_dates:
                 print(f"🎉🎉 续期成功！到期时间已更新: {old_dates} ➔ {new_dates}")
             else:
@@ -140,6 +144,7 @@ def run():
             else:
                 print("ℹ️ 未发现可点击的续期按钮。")
 
+        # 保存最终截图
         page.screenshot(path="result.png", full_page=True)
         print("📸 最终截图已保存至 result.png")
         browser.close()
