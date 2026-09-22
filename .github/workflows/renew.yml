@@ -5,13 +5,12 @@ on:
 
 jobs:
   renew:
-    # 锁定 ubuntu-22.04 环境，完美兼容 WARP 与 Camoufox
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 开启 Cloudflare WARP 官方网络出口
+      # 开启 Cloudflare WARP 官方出口
       - name: Setup Cloudflare WARP
         uses: fscarmen/warp-on-actions@v1.4
         with:
@@ -22,17 +21,20 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install dependencies & Xvfb
         run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
           pip install playwright camoufox
           playwright install-deps
           python -m camoufox fetch
 
-      - name: Run Auto Renew Script
+      - name: Run Auto Renew Script (in Virtual Display)
         env:
           COOKIE: ${{ secrets.COOKIE }}
+        # 使用 xvfb-run 开启真实桌面环境运行
         run: |
-          python renew.py
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
 
       - name: Upload Screenshot Artifact
         if: always()
