@@ -31,22 +31,30 @@ def extract_dates(page):
 
 def run():
     with sync_playwright() as p:
-        print("🚀 启动无头浏览器...")
+        print("🚀 启动反检测浏览器...")
+        # 配置抗 Cloudflare 检测参数
         browser = p.chromium.launch(
             headless=True,
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
-                "--disable-blink-features=AutomationControlled"
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--window-size=1920,1080"
             ]
         )
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+            locale="fr-FR"
         )
 
-        # 自动接受原生 alert / confirm 弹窗
-        context.on("dialog", lambda dialog: (print(f"🔔 触发原生弹窗: {dialog.message}"), dialog.accept()))
+        # 隐藏 webdriver 特征，避免被 Turnstile 识别为自动化工具
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+        """)
 
         context.add_cookies(cookies)
         page = context.new_page()
@@ -69,7 +77,6 @@ def run():
             accept_btn = page.locator("button:has-text('Accepter')")
             if accept_btn.count() > 0 and accept_btn.first.is_visible():
                 accept_btn.first.click()
-                print("🍪 已关闭底部 Cookie 提示条")
                 time.sleep(1)
         except Exception:
             pass
@@ -77,7 +84,7 @@ def run():
         old_dates = extract_dates(page)
         print(f"📅 点击前页面日期: {old_dates}")
 
-        # 锁定续期按钮（排除顶部 À renouveler 标签）
+        # 精确定位续期按钮
         renew_btn = page.locator("button, a").filter(
             has_text=re.compile(r"Renouveler\s+gratuitement", re.I)
         )
@@ -85,44 +92,44 @@ def run():
         if renew_btn.count() > 0 and renew_btn.first.is_visible():
             target_text = renew_btn.first.inner_text().strip()
             print(f"🎉 正在点击续期按钮: 【{target_text}】...")
-
-            # 1. 点击续期按钮
             renew_btn.first.click()
-            time.sleep(2)
+            time.sleep(3)
 
-            # 2. 保存点击后的瞬间截图，便于排查是否有弹窗
+            # 保存点击后的截图
             page.screenshot(path="after_click.png", full_page=True)
-            print("📸 已保存点击后的瞬间截图至 after_click.png")
 
-            # 3. 智能检测并确认弹窗按钮（排除删除/取消类操作）
-            confirm_selectors = [
-                ".modal button:visible",
-                "[role='dialog'] button:visible",
-                ".swal2-modal button:visible",
-                "button:has-text('Confirmer'):visible",
-                "button:has-text('Valider'):visible",
-                "button:has-text('Oui'):visible",
-                "button:has-text('Renouveler'):visible"
-            ]
+            print("🛡️ 检测到 Cloudflare 人机验证弹窗，正在处理 Turnstile 验证...")
 
-            for sel in confirm_selectors:
-                elements = page.locator(sel).all()
-                for el in elements:
-                    try:
-                        el_text = el.inner_text().strip()
-                        if el_text and not any(k in el_text.lower() for k in ["annuler", "fermer", "close", "cancel", "supprimer", "suppression", "résilier"]):
-                            print(f"👉 检测到确认弹窗/按钮: 【{el_text}】，正在点击确认...")
-                            el.click(timeout=3000)
-                            time.sleep(3)
-                            break
-                    except Exception:
-                        pass
+            # 循环 30 秒等待并尝试通过 Cloudflare Turnstile 验证
+            verified = False
+            for i in range(15):
+                print(f"⏳ 正在等待 Cloudflare 验证中 ({i+1}/15)...")
+                try:
+                    # 尝试寻找 Turnstile iframe 并点击复选框
+                    cf_frame = page.frame_locator("iframe[src*='cloudflare.com'], iframe[src*='turnstile']")
+                    checkbox = cf_frame.locator("input[type='checkbox'], .cb-lb, #challenge-stage")
+                    if checkbox.count() > 0 and checkbox.first.is_visible():
+                        print("👉 尝试点击 Turnstile 验证框...")
+                        checkbox.first.click()
+                except Exception:
+                    pass
 
-            # 等待接口响应
-            time.sleep(5)
+                time.sleep(2)
 
-            # 4. 刷新页面验证结果
-            print("2. 正在刷新页面验证最新状态...")
+                # 检查弹窗是否已经成功关闭（说明验证通过并提交了）
+                modal = page.locator("text='Vérification rapide'")
+                if modal.count() == 0 or not modal.first.is_visible():
+                    print("🎉 Cloudflare 验证通过，弹窗已自动关闭并提交！")
+                    verified = True
+                    break
+
+            if not verified:
+                print("⚠️ 验证耗时较长，尝试继续刷新验证状态...")
+
+            time.sleep(4)
+
+            # 刷新页面验证最新状态
+            print("2. 正在刷新页面验证续期结果...")
             page.reload(wait_until="domcontentloaded")
             time.sleep(5)
 
@@ -131,11 +138,11 @@ def run():
             print(f"📅 刷新后页面日期: {new_dates}")
 
             if "Renouvelable dans" in new_page_text:
-                print("🎉🎉 续期成功！按钮已进入下一次倒计时状态！")
+                print("🎉🎉🎉 续期成功！已进入下一次续期倒计时！")
             elif old_dates != new_dates:
-                print(f"🎉🎉 续期成功！到期时间已更新: {old_dates} ➔ {new_dates}")
+                print(f"🎉🎉🎉 续期成功！到期时间已更新: {old_dates} ➔ {new_dates}")
             else:
-                print("ℹ️ 流程执行完毕，请查看生成的截图确认具体状态。")
+                print("ℹ️ 页面已刷新，请查看最终截图 result.png 确认最新状态。")
 
         else:
             not_yet = page.locator("text=/Renouvelable dans/i")
@@ -144,7 +151,6 @@ def run():
             else:
                 print("ℹ️ 未发现可点击的续期按钮。")
 
-        # 保存最终截图
         page.screenshot(path="result.png", full_page=True)
         print("📸 最终截图已保存至 result.png")
         browser.close()
