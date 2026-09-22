@@ -29,7 +29,8 @@ def extract_dates(text):
         return []
 
 async def trigger_turnstile_box(page):
-    """在住宅 IP 环境下轻点一次验证框"""
+    """在真实住宅 IP 下轻点一次 Turnstile 复选框"""
+    # 策略 1: Frame 内直接命中复选框元素
     for frame in page.frames:
         if "challenges.cloudflare.com" in frame.url:
             for sel in ["input[type='checkbox']", ".ctp-checkbox-label", "#challenge-stage", "label"]:
@@ -39,11 +40,12 @@ async def trigger_turnstile_box(page):
                         await target.hover()
                         await asyncio.sleep(0.3)
                         await target.click(timeout=1500)
-                        print(f"🎯 [住宅网络] 成功点击内部复选框: {sel}")
+                        print(f"🎯 [住宅网络] 成功触发内部复选框点击: {sel}")
                         return True
                 except Exception:
                     pass
 
+    # 策略 2: 弹窗物理坐标模拟
     try:
         modal = page.locator("div:has-text('Vérification rapide')").last
         if await modal.is_visible():
@@ -63,13 +65,14 @@ async def trigger_turnstile_box(page):
 async def run():
     print("🚀 正在通过本地 SOCKS5 住宅代理启动 Camoufox 内核...")
     
-    # 将流量引流至本地 sing-box 住宅代理
+    # 加入 geoip=True 自动对齐代理所在地特征
     async with AsyncCamoufox(
         headless=False,
         humanize=True,
         os="windows",
         disable_coop=True,
         i_know_what_im_doing=True,
+        geoip=True,
         proxy={"server": "socks5://127.0.0.1:1080"}
     ) as browser:
         context = await browser.new_context(
@@ -82,7 +85,7 @@ async def run():
 
         renew_success_event = asyncio.Event()
 
-        # 监听真正的续期后台接口
+        # 严格监听真正后端接口的响应
         async def on_response(res):
             url = res.url.lower()
             if "renew_free_service.php" in url:
@@ -131,10 +134,9 @@ async def run():
             await page.screenshot(path="after_click.png", full_page=True)
             print("🛡️ 住宅 IP 环境下，Turnstile 正在验证中...")
 
-            # 轮询等待验证完成
             for i in range(12):
                 if renew_success_event.is_set():
-                    print("🎉 接口响应成功，提前退出循环！")
+                    print("🎉 接口响应成功，提前退出验证循环！")
                     break
 
                 print(f"⏳ 等待并辅助验证 ({i+1}/12)...")
@@ -143,7 +145,7 @@ async def run():
 
                 modal = page.locator("div:has-text('Vérification rapide')")
                 if await modal.count() == 0 or not await modal.first.is_visible():
-                    print("🎉🎉 Cloudflare 验证通过，弹窗已关闭！")
+                    print("🎉🎉 Cloudflare 验证通过，弹窗已自动关闭！")
                     break
 
             await page.screenshot(path="cf_clicked.png", full_page=True)
