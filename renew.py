@@ -29,53 +29,30 @@ def extract_dates(page):
     except Exception:
         return []
 
-def click_turnstile_checkbox(page):
-    """全方位穿透并点击 Cloudflare Turnstile 复选框"""
-    clicked = False
-
-    # 1. 深度遍历所有 Frame 内部触发
-    for frame in page.frames:
-        if any(k in frame.url for k in ["challenges.cloudflare", "turnstile", "cloudflare"]):
-            try:
-                print(f"👉 探测到 Turnstile Frame: {frame.url[:45]}...")
-                for sel in ["input[type='checkbox']", ".cb-lb", "#challenge-stage", "body"]:
-                    loc = frame.locator(sel)
-                    if loc.count() > 0:
-                        loc.first.click(timeout=1500)
-                        print(f"🎯 [Frame内部点击成功] 命中选择器: {sel}")
-                        clicked = True
-                        break
-            except Exception:
-                pass
-
-    # 2. 通过 FrameLocator 穿透点击
-    try:
-        cf_locator = page.frame_locator("iframe").locator("input[type='checkbox'], .cb-lb, #challenge-stage, label")
-        if cf_locator.count() > 0:
-            cf_locator.first.click(timeout=1500)
-            print("🎯 [FrameLocator 穿透点击成功]")
-            clicked = True
-    except Exception:
-        pass
-
-    # 3. 弹窗绝对坐标物理点击（最稳兜底）
+def gentle_click_checkbox(page):
+    """像真人一样只精准点击一次 Turnstile 复选框"""
     try:
         modal = page.locator("div:has-text('Vérification rapide')").last
         if modal.is_visible():
             box = modal.bounding_box()
             if box:
-                # 弹窗内验证框左侧复选框的大致物理坐标
-                target_x = box["x"] + (box["width"] * 0.22)
+                # 弹窗内复选框的精准坐标
+                target_x = box["x"] + (box["width"] * 0.23)
                 target_y = box["y"] + (box["height"] * 0.58)
-                print(f"🎯 [物理坐标点击] 弹窗基准坐标: ({target_x:.1f}, {target_y:.1f})")
-                page.mouse.move(target_x - 30, target_y - 20)
-                time.sleep(0.2)
+                print(f"🎯 模拟真人鼠标平滑移动至验证框: ({target_x:.1f}, {target_y:.1f})...")
+                
+                # 模拟真实轨迹移动与停留
+                page.mouse.move(target_x - 60, target_y - 40)
+                time.sleep(0.4)
+                page.mouse.move(target_x, target_y)
+                time.sleep(0.6)
+                # 仅点击一次
                 page.mouse.click(target_x, target_y)
-                clicked = True
-    except Exception:
-        pass
-
-    return clicked
+                print("👉 已轻点验证框一次，静候 Cloudflare 响应...")
+                return True
+    except Exception as e:
+        print(f"⚠️ 拟真点击提示: {e}")
+    return False
 
 def run():
     print("🚀 正在虚拟桌面中启动 Camoufox 真实有头浏览器...")
@@ -102,9 +79,9 @@ def run():
             page.screenshot(path="result.png", full_page=True)
             sys.exit(1)
 
-        print("✅ 成功进入服务管理后台！")
+        print("✅ 成功进入服务后台！")
 
-        # 自动同意 Cookie 提示
+        # 自动关闭 Cookie 提示
         try:
             accept_btn = page.locator("button:has-text('Accepter')")
             if accept_btn.count() > 0 and accept_btn.first.is_visible():
@@ -125,35 +102,28 @@ def run():
             target_text = renew_btn.first.inner_text().strip()
             print(f"🎉 正在点击续期按钮: 【{target_text}】...")
             renew_btn.first.click()
-            time.sleep(3)
 
+            print("🛡️ 弹窗出现，先静止等待 5 秒观察 Turnstile 自动校验...")
+            time.sleep(5)
             page.screenshot(path="after_click.png", full_page=True)
-            print("🛡️ 正在执行 Cloudflare Turnstile 穿透点击...")
 
-            verified = False
-            for i in range(15):
-                print(f"⏳ 正在处理验证第 ({i+1}/15) 次尝试...")
-                click_turnstile_checkbox(page)
-                time.sleep(3)
-
-                # 检查验证弹窗是否已消失（消失代表验证通过）
-                modal = page.locator("div:has-text('Vérification rapide')")
-                if modal.count() == 0 or not modal.first.is_visible():
-                    print("🎉🎉 Cloudflare 验证完全通过！弹窗已自动关闭并提交续期！")
-                    verified = True
-                    break
+            modal = page.locator("div:has-text('Vérification rapide')")
+            
+            # 如果 5 秒后弹窗还在，执行一次真人模式点击
+            if modal.count() > 0 and modal.first.is_visible():
+                print("⏳ 尝试进行一次真人模式勾选...")
+                gentle_click_checkbox(page)
+                
+                # 留出 10 秒充足时间等待验证与提交响应
+                print("⏳ 等待 Cloudflare 生成 Token 并提交...")
+                time.sleep(10)
 
             page.screenshot(path="cf_clicked.png", full_page=True)
 
-            if not verified:
-                print("⚠️ 验证可能已在后台完成，正在重新加载服务列表...")
-
-            time.sleep(5)
-
-            # 重新加载服务页面验证结果
+            # 重新刷新服务页面查看最新状态
             print("2. 正在重新加载服务列表页验证结果...")
             page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
-            time.sleep(5)
+            time.sleep(6)
 
             new_dates = extract_dates(page)
             new_page_text = page.inner_text("body")
