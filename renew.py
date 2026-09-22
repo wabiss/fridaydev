@@ -31,7 +31,6 @@ def extract_dates(page):
 
 def click_turnstile_challenge(page):
     """物理坐标精准点击 Cloudflare Turnstile 复选框"""
-    # 策略 1: 扫描可见 iframe
     for frame in page.locator("iframe").all():
         try:
             if frame.is_visible():
@@ -47,7 +46,6 @@ def click_turnstile_challenge(page):
         except Exception:
             pass
 
-    # 策略 2: 弹窗中心区域点击
     modal = page.locator("div:has-text('Vérification rapide')").last
     try:
         if modal.is_visible():
@@ -65,7 +63,6 @@ def click_turnstile_challenge(page):
 
 def run():
     print("🚀 正在启动 Camoufox 反检测浏览器内核...")
-    # 修复：移除导致报错的 screen 参数，由 Camoufox 自动生成真实设备指纹
     with Camoufox(headless=True, os="windows") as browser:
         context = browser.new_context(locale="fr-FR")
 
