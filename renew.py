@@ -3,7 +3,6 @@ import re
 import sys
 import time
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
 
 COOKIE_STR = os.environ.get("COOKIE")
 
@@ -33,7 +32,6 @@ def extract_dates(page):
 def click_turnstile_box(page):
     """通过物理屏幕坐标精准点击 Cloudflare Turnstile 复选框"""
     try:
-        # 寻找 Cloudflare 挑战 iframe
         iframes = page.locator("iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile'], iframe[title*='Cloudflare']").all()
         for frame in iframes:
             if frame.is_visible():
@@ -44,8 +42,7 @@ def click_turnstile_box(page):
                     click_y = box["y"] + box["height"] / 2
                     print(f"🎯 定位到 Cloudflare 验证框坐标: ({click_x:.1f}, {click_y:.1f})，正在模拟真实鼠标点击...")
                     
-                    # 模拟真人鼠标轨迹移动并点击
-                    page.mouse.move(click_x - 50, click_y - 20)
+                    page.mouse.move(click_x - 40, click_y - 20)
                     time.sleep(0.3)
                     page.mouse.move(click_x, click_y)
                     time.sleep(0.2)
@@ -74,10 +71,16 @@ def run():
             locale="fr-FR"
         )
 
+        # 原生注入完整的 anti-detect 特征伪装
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'languages', { get: () => ['fr-FR', 'fr', 'en-US', 'en'] });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        """)
+
         context.add_cookies(cookies)
         page = context.new_page()
-        # 启用 stealth 反爬混淆
-        stealth_sync(page)
 
         print("1. 正在访问服务页面...")
         page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
@@ -92,7 +95,7 @@ def run():
 
         print("✅ Cookie 有效，进入后台！")
 
-        # 自动关闭 Cookie 提示条
+        # 自动关闭底部 Cookie 提示条
         try:
             accept_btn = page.locator("button:has-text('Accepter')")
             if accept_btn.count() > 0 and accept_btn.first.is_visible():
@@ -124,11 +127,11 @@ def run():
             for i in range(12):
                 print(f"⏳ 正在处理验证 ({i+1}/12)...")
                 
-                # 尝试通过物理坐标点击复选框
+                # 点击复选框
                 click_turnstile_box(page)
                 time.sleep(3)
 
-                # 检查弹窗是否已经成功关闭（消失说明通过）
+                # 检查验证弹窗是否消失
                 modal = page.locator("text='Vérification rapide'")
                 if modal.count() == 0 or not modal.first.is_visible():
                     print("🎉🎉 Cloudflare 验证通过，续期请求已自动提交！")
@@ -138,7 +141,7 @@ def run():
             page.screenshot(path="cf_clicked.png", full_page=True)
 
             if not verified:
-                print("⚠️ 验证正在后台处理，准备刷新校验...")
+                print("⚠️ 验证超时或在后台处理中，正在刷新检查...")
 
             time.sleep(5)
 
