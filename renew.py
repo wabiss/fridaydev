@@ -29,32 +29,56 @@ def extract_dates(page):
     except Exception:
         return []
 
-def solve_turnstile_box(page):
-    """精准点击 Cloudflare Turnstile 复选框"""
-    for frame in page.locator("iframe").all():
-        try:
-            if frame.is_visible():
-                box = frame.bounding_box()
-                # 过滤出符合人机验证尺寸的 iframe
-                if box and box["width"] > 100 and box["height"] > 25:
-                    click_x = box["x"] + 30
-                    click_y = box["y"] + (box["height"] / 2)
-                    print(f"🎯 [物理定位] 验证框坐标: ({click_x:.1f}, {click_y:.1f})，正在模拟真实鼠标轨迹点击...")
-                    
-                    # 模拟真实鼠标平滑移动
-                    page.mouse.move(click_x - 50, click_y - 30)
-                    time.sleep(0.3)
-                    page.mouse.move(click_x, click_y)
-                    time.sleep(0.2)
-                    page.mouse.click(click_x, click_y)
-                    return True
-        except Exception:
-            pass
-    return False
+def click_turnstile_checkbox(page):
+    """全方位穿透并点击 Cloudflare Turnstile 复选框"""
+    clicked = False
+
+    # 1. 深度遍历所有 Frame 内部触发
+    for frame in page.frames:
+        if any(k in frame.url for k in ["challenges.cloudflare", "turnstile", "cloudflare"]):
+            try:
+                print(f"👉 探测到 Turnstile Frame: {frame.url[:45]}...")
+                for sel in ["input[type='checkbox']", ".cb-lb", "#challenge-stage", "body"]:
+                    loc = frame.locator(sel)
+                    if loc.count() > 0:
+                        loc.first.click(timeout=1500)
+                        print(f"🎯 [Frame内部点击成功] 命中选择器: {sel}")
+                        clicked = True
+                        break
+            except Exception:
+                pass
+
+    # 2. 通过 FrameLocator 穿透点击
+    try:
+        cf_locator = page.frame_locator("iframe").locator("input[type='checkbox'], .cb-lb, #challenge-stage, label")
+        if cf_locator.count() > 0:
+            cf_locator.first.click(timeout=1500)
+            print("🎯 [FrameLocator 穿透点击成功]")
+            clicked = True
+    except Exception:
+        pass
+
+    # 3. 弹窗绝对坐标物理点击（最稳兜底）
+    try:
+        modal = page.locator("div:has-text('Vérification rapide')").last
+        if modal.is_visible():
+            box = modal.bounding_box()
+            if box:
+                # 弹窗内验证框左侧复选框的大致物理坐标
+                target_x = box["x"] + (box["width"] * 0.22)
+                target_y = box["y"] + (box["height"] * 0.58)
+                print(f"🎯 [物理坐标点击] 弹窗基准坐标: ({target_x:.1f}, {target_y:.1f})")
+                page.mouse.move(target_x - 30, target_y - 20)
+                time.sleep(0.2)
+                page.mouse.click(target_x, target_y)
+                clicked = True
+    except Exception:
+        pass
+
+    return clicked
 
 def run():
     print("🚀 正在虚拟桌面中启动 Camoufox 真实有头浏览器...")
-    # 启用 headless=False（结合 Xvfb 达到真实桌面环境）
     with Camoufox(
         headless=False,
         humanize=True,
@@ -78,9 +102,9 @@ def run():
             page.screenshot(path="result.png", full_page=True)
             sys.exit(1)
 
-        print("✅ 成功进入服务后台！")
+        print("✅ 成功进入服务管理后台！")
 
-        # 自动关闭 Cookie 提示条
+        # 自动同意 Cookie 提示
         try:
             accept_btn = page.locator("button:has-text('Accepter')")
             if accept_btn.count() > 0 and accept_btn.first.is_visible():
@@ -92,7 +116,7 @@ def run():
         old_dates = extract_dates(page)
         print(f"📅 点击前页面日期: {old_dates}")
 
-        # 定位续期按钮
+        # 锁定续期按钮
         renew_btn = page.locator("button, a").filter(
             has_text=re.compile(r"Renouveler\s+gratuitement", re.I)
         )
@@ -104,30 +128,29 @@ def run():
             time.sleep(3)
 
             page.screenshot(path="after_click.png", full_page=True)
-            print("🛡️ 检测到 Cloudflare Turnstile，正在通过真实桌面环境进行验证...")
+            print("🛡️ 正在执行 Cloudflare Turnstile 穿透点击...")
 
-            # 轮询点击并等待验证通过
             verified = False
-            for i in range(12):
-                print(f"⏳ 正在处理人机验证 ({i+1}/12)...")
-                solve_turnstile_box(page)
+            for i in range(15):
+                print(f"⏳ 正在处理验证第 ({i+1}/15) 次尝试...")
+                click_turnstile_checkbox(page)
                 time.sleep(3)
 
-                # 检查弹窗是否已经成功关闭
+                # 检查验证弹窗是否已消失（消失代表验证通过）
                 modal = page.locator("div:has-text('Vérification rapide')")
                 if modal.count() == 0 or not modal.first.is_visible():
-                    print("🎉🎉 Cloudflare 验证通过！弹窗已自动关闭并提交！")
+                    print("🎉🎉 Cloudflare 验证完全通过！弹窗已自动关闭并提交续期！")
                     verified = True
                     break
 
             page.screenshot(path="cf_clicked.png", full_page=True)
 
             if not verified:
-                print("⚠️ 验证可能已在后台完成，正在重新加载服务页面...")
+                print("⚠️ 验证可能已在后台完成，正在重新加载服务列表...")
 
             time.sleep(5)
 
-            # 明确跳转回服务列表页，防止 404
+            # 重新加载服务页面验证结果
             print("2. 正在重新加载服务列表页验证结果...")
             page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
             time.sleep(5)
