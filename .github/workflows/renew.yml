@@ -10,27 +10,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 1. 安装并启动 sing-box 住宅代理
+      # 1. 启动 sing-box 住宅代理并进行健康检查
       - name: Setup Sing-box Residential Proxy
         env:
           PROXY_CONFIG: ${{ secrets.PROXY_CONFIG }}
         run: |
-          # 下载并安装 sing-box
+          # 下载 sing-box
           curl -Lo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.9.0/sing-box-1.9.0-linux-amd64.tar.gz
           tar -xzf sing-box.tar.gz
           sudo mv sing-box-*/sing-box /usr/local/bin/
           rm -rf sing-box*
 
-          # 保存节点配置
-          echo "$PROXY_CONFIG" > node.json
+          # 保存原始节点信息
+          echo "$PROXY_CONFIG" > node_raw.json
 
-          # 构造完整的本地 SOCKS5 客户端配置
+          # 转换为标准 sing-box 完整配置
           python3 -c '
           import json
-          with open("node.json") as f:
-              outbound = json.load(f)
-          outbound["tag"] = "proxy"
-          
+          with open("node_raw.json") as f:
+              node = json.load(f)
+
+          # 剔除无效外部参数
+          for k in ["groupid", "attach", "latency", "outlet_ip", "outlet_region"]:
+              node.pop(k, None)
+          node["tag"] = "proxy"
+
           config = {
               "inbounds": [{
                   "type": "socks",
@@ -38,21 +42,43 @@ jobs:
                   "listen": "127.0.0.1",
                   "listen_port": 1080
               }],
-              "outbounds": [outbound]
+              "outbounds": [
+                  node,
+                  {"type": "direct", "tag": "direct"}
+              ],
+              "route": {
+                  "final": "proxy",
+                  "auto_detect_interface": True
+              }
           }
+
           with open("config.json", "w") as f:
               json.dump(config, f, indent=2)
           '
 
-          # 后台运行 sing-box
-          sing-box run -c config.json > singbox.log 2>&1 &
-          sleep 3
+          # 启动 sing-box
+          nohup sing-box run -c config.json > singbox.log 2>&1 &
+          
+          # 等待端口就绪并验证
+          echo "⏳ 等待 sing-box 代理端口就绪..."
+          for i in {1..10}; do
+              if nc -z 127.0.0.1 1080; then
+                  echo "✅ Sing-box SOCKS5 代理端口 1080 启动成功！"
+                  break
+              fi
+              sleep 1
+          done
 
-          # 测试代理连通性及出口 IP
-          echo "🌐 测试住宅代理出口 IP..."
-          curl -x socks5://127.0.0.1:1080 https://api.ipify.org || echo "代理启动中..."
+          # 测试住宅节点连通性及出口 IP
+          echo "🌐 测试住宅代理网络连通性..."
+          curl -s -x socks5h://127.0.0.1:1080 https://api.ipify.org || {
+              echo "❌ 代理连接失败，打印 sing-box 错误日志："
+              cat singbox.log
+              exit 1
+          }
+          echo ""
 
-      # 2. 安装 Python 及环境
+      # 2. 安装 Python 环境及 Xvfb
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -66,14 +92,14 @@ jobs:
           playwright install-deps
           python -m camoufox fetch
 
-      # 3. 在虚拟桌面上运行自动化脚本
-      - name: Run Auto Renew Script
+      # 3. 运行自动化续期脚本
+      - name: Run Auto Renew Script (in Virtual Display)
         env:
           COOKIE: ${{ secrets.COOKIE }}
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
 
-      # 4. 上传截图便于检查
+      # 4. 上传截图
       - name: Upload Screenshot Artifact
         if: always()
         uses: actions/upload-artifact@v4
