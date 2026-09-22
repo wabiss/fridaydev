@@ -10,7 +10,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 开启 Cloudflare WARP 出口
+      # 开启 Cloudflare WARP 官方网络出口
       - name: Setup Cloudflare WARP
         uses: fscarmen/warp-on-actions@v1.4
         with:
@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
-          pip install playwright camoufox playwright-captcha
+          pip install playwright camoufox
           playwright install-deps
           python -m camoufox fetch
 
