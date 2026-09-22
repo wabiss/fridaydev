@@ -31,7 +31,7 @@ async def extract_dates(page):
         return []
 
 async def run():
-    print("🚀 正在以 Async 异步模式启动 Camoufox 反检测内核...")
+    print("🚀 正在以 Async 模式启动 Camoufox 反检测内核...")
     async with AsyncCamoufox(
         headless=False,
         humanize=True,
@@ -46,6 +46,11 @@ async def run():
 
         await context.add_cookies(cookies)
         page = await context.new_page()
+
+        # 关键步骤：在页面初始化时立即 prepare 注入底层监听
+        print("🤖 初始化 playwright_captcha 求解器环境...")
+        solver = ClickSolver(framework=FrameworkType.CAMOUFOX, page=page)
+        await solver.prepare()
 
         print("1. 正在访问服务管理页面...")
         await page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
@@ -83,23 +88,24 @@ async def run():
             await asyncio.sleep(3)
 
             await page.screenshot(path="after_click.png", full_page=True)
-            print("🛡️ 正在调用专业求解引擎处理 Cloudflare Turnstile...")
-
-            # 初始化异步验证码求解器
-            solver = ClickSolver(framework=FrameworkType.CAMOUFOX, page=page)
+            print("🛡️ 正在调用专业引擎求解 Cloudflare Turnstile...")
 
             verified = False
             for i in range(10):
                 print(f"⏳ 正在执行人机验证异步求解 ({i+1}/10)...")
                 try:
-                    # 正确 await 执行求解操作
-                    await solver.solve_captcha(captcha_container=page, captcha_type=CaptchaType.CLOUDFLARE_TURNSTILE)
+                    # 调用已经 prepare 过的 solver 进行求解
+                    await solver.solve_captcha(
+                        captcha_container=page, 
+                        captcha_type=CaptchaType.CLOUDFLARE_TURNSTILE
+                    )
+                    print("🎯 求解指令已发送！")
                 except Exception as e:
-                    print(f"ℹ️ Solver 执行提示: {e}")
+                    print(f"ℹ️ 求解器提示: {e}")
 
                 await asyncio.sleep(3)
 
-                # 检查验证弹窗是否已消失（消失表示通过并提交）
+                # 检查验证弹窗是否已消失（消失表示验证通过并提交）
                 modal = page.locator("div:has-text('Vérification rapide')")
                 if await modal.count() == 0 or not await modal.first.is_visible():
                     print("🎉🎉 Cloudflare 验证通过！弹窗已自动关闭并提交！")
