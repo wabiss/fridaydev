@@ -5,14 +5,17 @@ on:
 
 jobs:
   renew:
-    runs-on: ubuntu-latest
+    # 锁定 ubuntu-22.04 环境，完美兼容 WARP 与 Camoufox
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 关键步骤：开启 Cloudflare WARP 网络，绕过机房 IP 拦截
+      # 开启 Cloudflare WARP 官方网络出口
       - name: Setup Cloudflare WARP
-        uses: fscarmen/warp-on-actions@v1.3
+        uses: fscarmen/warp-on-actions@v1.4
+        with:
+          stack: dual
 
       - name: Set up Python
         uses: actions/setup-python@v5
