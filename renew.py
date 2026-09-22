@@ -29,37 +29,56 @@ def extract_dates(page):
     except Exception:
         return []
 
-def gentle_click_checkbox(page):
-    """像真人一样只精准点击一次 Turnstile 复选框"""
+def solve_turnstile(page):
+    """在开启 disable_coop 模式下精准触发 Turnstile 校验"""
+    # 策略 1: 直接穿透 iframe 内部点击真正的复选框
     try:
-        modal = page.locator("div:has-text('Vérification rapide')").last
+        cf_frame = page.frame_locator("iframe[src*='cloudflare.com'], iframe[src*='turnstile']").first
+        checkbox = cf_frame.locator("input[type='checkbox'], .cb-lb, #challenge-stage")
+        if checkbox.count() > 0 and checkbox.is_visible():
+            print("🎯 [成功穿透] 锁定 Turnstile 内部复选框，正在真实点击...")
+            checkbox.click()
+            return True
+    except Exception as e:
+        print(f"⚠️ 穿透点击提示: {e}")
+
+    # 策略 2: 遍历所有 frame
+    for frame in page.frames:
+        if "challenges.cloudflare" in frame.url:
+            try:
+                for sel in ["input[type='checkbox']", ".cb-lb", "#challenge-stage"]:
+                    loc = frame.locator(sel)
+                    if loc.count() > 0 and loc.first.is_visible():
+                        print(f"🎯 [Frame内部] 点击元素: {sel}")
+                        loc.first.click()
+                        return True
+            except Exception:
+                pass
+
+    # 策略 3: 弹窗物理坐标点击
+    modal = page.locator("div:has-text('Vérification rapide')").last
+    try:
         if modal.is_visible():
             box = modal.bounding_box()
             if box:
-                # 弹窗内复选框的精准坐标
-                target_x = box["x"] + (box["width"] * 0.23)
-                target_y = box["y"] + (box["height"] * 0.58)
-                print(f"🎯 模拟真人鼠标平滑移动至验证框: ({target_x:.1f}, {target_y:.1f})...")
-                
-                # 模拟真实轨迹移动与停留
-                page.mouse.move(target_x - 60, target_y - 40)
-                time.sleep(0.4)
-                page.mouse.move(target_x, target_y)
-                time.sleep(0.6)
-                # 仅点击一次
-                page.mouse.click(target_x, target_y)
-                print("👉 已轻点验证框一次，静候 Cloudflare 响应...")
+                click_x = box["x"] + (box["width"] * 0.23)
+                click_y = box["y"] + (box["height"] * 0.58)
+                print(f"🎯 [物理坐标] 点击验证框: ({click_x:.1f}, {click_y:.1f})")
+                page.mouse.click(click_x, click_y)
                 return True
-    except Exception as e:
-        print(f"⚠️ 拟真点击提示: {e}")
+    except Exception:
+        pass
+
     return False
 
 def run():
-    print("🚀 正在虚拟桌面中启动 Camoufox 真实有头浏览器...")
+    print("🚀 正在启动 Camoufox (已启用 disable_coop 解除跨域隔离)...")
+    # 关键参数：disable_coop=True 允许与 Cloudflare iframe 产生真实交互
     with Camoufox(
         headless=False,
         humanize=True,
-        os="windows"
+        os="windows",
+        disable_coop=True
     ) as browser:
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -81,7 +100,7 @@ def run():
 
         print("✅ 成功进入服务后台！")
 
-        # 自动关闭 Cookie 提示
+        # 自动关闭 Cookie 提示条
         try:
             accept_btn = page.locator("button:has-text('Accepter')")
             if accept_btn.count() > 0 and accept_btn.first.is_visible():
@@ -102,26 +121,36 @@ def run():
             target_text = renew_btn.first.inner_text().strip()
             print(f"🎉 正在点击续期按钮: 【{target_text}】...")
             renew_btn.first.click()
+            time.sleep(3)
 
-            print("🛡️ 弹窗出现，先静止等待 5 秒观察 Turnstile 自动校验...")
-            time.sleep(5)
             page.screenshot(path="after_click.png", full_page=True)
+            print("🛡️ 正在进行 Cloudflare 人机验证...")
 
-            modal = page.locator("div:has-text('Vérification rapide')")
-            
-            # 如果 5 秒后弹窗还在，执行一次真人模式点击
-            if modal.count() > 0 and modal.first.is_visible():
-                print("⏳ 尝试进行一次真人模式勾选...")
-                gentle_click_checkbox(page)
+            # 轮询验证（只进行轻柔交互，绝不暴力连点）
+            verified = False
+            for i in range(12):
+                print(f"⏳ 正在等待/处理人机验证 ({i+1}/12)...")
                 
-                # 留出 10 秒充足时间等待验证与提交响应
-                print("⏳ 等待 Cloudflare 生成 Token 并提交...")
-                time.sleep(10)
+                # 尝试点击复选框
+                solve_turnstile(page)
+                time.sleep(3)
+
+                # 检测弹窗是否已消失（消失说明验证通过并提交）
+                modal = page.locator("div:has-text('Vérification rapide')")
+                if modal.count() == 0 or not modal.first.is_visible():
+                    print("🎉🎉 Cloudflare 验证成功通过！弹窗已关闭！")
+                    verified = True
+                    break
 
             page.screenshot(path="cf_clicked.png", full_page=True)
 
-            # 重新刷新服务页面查看最新状态
-            print("2. 正在重新加载服务列表页验证结果...")
+            if not verified:
+                print("⚠️ 正在重新加载页面以确认后台是否已自动更新...")
+
+            time.sleep(5)
+
+            # 重新加载服务列表页验证最终状态
+            print("2. 正在刷新服务列表页验证最新状态...")
             page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
             time.sleep(6)
 
@@ -130,11 +159,11 @@ def run():
             print(f"📅 刷新后最新日期: {new_dates}")
 
             if "Renouvelable dans" in new_page_text:
-                print("🎉🎉🎉 续期大成功！服务已成功续期并重新进入倒计时！")
+                print("🎉🎉🎉 续期大成功！服务已成功顺延并进入下一次倒计时！")
             elif old_dates != new_dates:
                 print(f"🎉🎉🎉 续期大成功！到期时间已更新: {old_dates} ➔ {new_dates}")
             else:
-                print("ℹ️ 流程执行完毕，请查看最终截图 result.png 确认最新状态。")
+                print("ℹ️ 流程执行完毕，请查看生成的 result.png 确认最新状态。")
 
         else:
             not_yet = page.locator("text=/Renouvelable dans/i")
