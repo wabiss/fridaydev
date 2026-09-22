@@ -10,6 +10,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 关键步骤：开启 Cloudflare WARP 网络，绕过机房 IP 拦截
+      - name: Setup Cloudflare WARP
+        uses: fscarmen/warp-on-actions@v1.3
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
