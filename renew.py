@@ -29,42 +29,49 @@ def extract_dates(page):
     except Exception:
         return []
 
-def solve_turnstile(page):
-    """在开启 disable_coop 模式下精准触发 Turnstile 校验"""
-    # 策略 1: 直接穿透 iframe 内部点击真正的复选框
+def solve_turnstile_with_solver(page):
+    """使用专业 solver 与精准 DOM 注入自动穿透 Cloudflare Turnstile"""
+    # 策略 1: 尝试调用专业的 playwright_captcha ClickSolver
     try:
-        cf_frame = page.frame_locator("iframe[src*='cloudflare.com'], iframe[src*='turnstile']").first
-        checkbox = cf_frame.locator("input[type='checkbox'], .cb-lb, #challenge-stage")
-        if checkbox.count() > 0 and checkbox.is_visible():
-            print("🎯 [成功穿透] 锁定 Turnstile 内部复选框，正在真实点击...")
-            checkbox.click()
-            return True
+        from playwright_captcha import ClickSolver, CaptchaType, FrameworkType
+        print("🤖 启动 playwright_captcha 专业求解引擎...")
+        solver = ClickSolver(framework=FrameworkType.CAMOUFOX, page=page)
+        solver.solve_captcha(captcha_container=page, captcha_type=CaptchaType.CLOUDFLARE_TURNSTILE)
+        print("🎯 专业引擎已执行穿透处理！")
+        return True
     except Exception as e:
-        print(f"⚠️ 穿透点击提示: {e}")
+        print(f"ℹ️ 自适应模式介入 (详情: {e})")
 
-    # 策略 2: 遍历所有 frame
-    for frame in page.frames:
-        if "challenges.cloudflare" in frame.url:
-            try:
-                for sel in ["input[type='checkbox']", ".cb-lb", "#challenge-stage"]:
-                    loc = frame.locator(sel)
-                    if loc.count() > 0 and loc.first.is_visible():
-                        print(f"🎯 [Frame内部] 点击元素: {sel}")
-                        loc.first.click()
-                        return True
-            except Exception:
-                pass
-
-    # 策略 3: 弹窗物理坐标点击
-    modal = page.locator("div:has-text('Vérification rapide')").last
+    # 策略 2: 精准穿透 Shadow-DOM 与 Frame 内复选框
     try:
+        for f in page.frames:
+            if "challenges.cloudflare.com" in f.url:
+                print(f"👉 定位到 Cloudflare 交互 Frame: {f.url[:50]}...")
+                # 寻找内部真实的 checkbox 容器
+                for target_sel in [".ctp-checkbox-label", "input[type='checkbox']", "#challenge-stage", "label"]:
+                    elem = f.locator(target_sel).first
+                    if elem.count() > 0 and elem.is_visible():
+                        print(f"🎯 命中内部元素: {target_sel}，正在模拟真人平滑点击...")
+                        elem.hover()
+                        time.sleep(0.3)
+                        elem.click()
+                        return True
+    except Exception as err:
+        print(f"⚠️ Frame 交互提示: {err}")
+
+    # 策略 3: 弹窗精准坐标轻点
+    try:
+        modal = page.locator("div:has-text('Vérification rapide')").last
         if modal.is_visible():
             box = modal.bounding_box()
             if box:
-                click_x = box["x"] + (box["width"] * 0.23)
-                click_y = box["y"] + (box["height"] * 0.58)
-                print(f"🎯 [物理坐标] 点击验证框: ({click_x:.1f}, {click_y:.1f})")
-                page.mouse.click(click_x, click_y)
+                # 命中复选框中心
+                target_x = box["x"] + (box["width"] * 0.22)
+                target_y = box["y"] + (box["height"] * 0.58)
+                print(f"🎯 [备用坐标点击]: ({target_x:.1f}, {target_y:.1f})")
+                page.mouse.move(target_x, target_y)
+                time.sleep(0.3)
+                page.mouse.click(target_x, target_y)
                 return True
     except Exception:
         pass
@@ -72,8 +79,7 @@ def solve_turnstile(page):
     return False
 
 def run():
-    print("🚀 正在启动 Camoufox (已启用 disable_coop 解除跨域隔离)...")
-    # 关键参数：disable_coop=True 允许与 Cloudflare iframe 产生真实交互
+    print("🚀 正在虚拟桌面中启动 Camoufox 真实有头浏览器...")
     with Camoufox(
         headless=False,
         humanize=True,
@@ -121,31 +127,29 @@ def run():
             target_text = renew_btn.first.inner_text().strip()
             print(f"🎉 正在点击续期按钮: 【{target_text}】...")
             renew_btn.first.click()
-            time.sleep(3)
+            time.sleep(4)
 
             page.screenshot(path="after_click.png", full_page=True)
-            print("🛡️ 正在进行 Cloudflare 人机验证...")
+            print("🛡️ 正在进行 Cloudflare 人机验证求解...")
 
-            # 轮询验证（只进行轻柔交互，绝不暴力连点）
+            # 轮询验证（使用专业 Solver 处理）
             verified = False
             for i in range(12):
-                print(f"⏳ 正在等待/处理人机验证 ({i+1}/12)...")
-                
-                # 尝试点击复选框
-                solve_turnstile(page)
+                print(f"⏳ 正在处理人机验证 ({i+1}/12)...")
+                solve_turnstile_with_solver(page)
                 time.sleep(3)
 
-                # 检测弹窗是否已消失（消失说明验证通过并提交）
+                # 检查验证弹窗是否已关闭
                 modal = page.locator("div:has-text('Vérification rapide')")
                 if modal.count() == 0 or not modal.first.is_visible():
-                    print("🎉🎉 Cloudflare 验证成功通过！弹窗已关闭！")
+                    print("🎉🎉 Cloudflare 验证完全通过！弹窗已自动提交！")
                     verified = True
                     break
 
             page.screenshot(path="cf_clicked.png", full_page=True)
 
             if not verified:
-                print("⚠️ 正在重新加载页面以确认后台是否已自动更新...")
+                print("⚠️ 正在重新加载页面以确认后台状态...")
 
             time.sleep(5)
 
