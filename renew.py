@@ -28,36 +28,58 @@ def extract_dates(text):
     except Exception:
         return []
 
-async def try_click_turnstile(page):
-    """原生穿透点击 Cloudflare Turnstile 复选框"""
-    # 方法 1: 扫描所有动态生成的 Frame
+async def click_turnstile_precisely(page):
+    """通过 Shadow-DOM 递归穿透 + 坐标精准触发 Cloudflare Turnstile 复选框"""
+    clicked = False
+
+    # 1. 扫描所有 Cloudflare Frame，并递归 Shadow Root 寻找 Checkbox
     for frame in page.frames:
         if "challenges.cloudflare.com" in frame.url:
-            print(f"👉 探测到 Cloudflare 动态 Frame: {frame.url[:50]}...")
-            for sel in ["input[type='checkbox']", ".ctp-checkbox-label", "#challenge-stage", "label", "body"]:
+            try:
+                # 注入 JS 深度递归 Shadow DOM 寻找真实点击靶点
+                js_click = """
+                () => {
+                    function findTarget(root) {
+                        if (!root) return null;
+                        let el = root.querySelector("input[type='checkbox'], [role='checkbox'], .ctp-checkbox-label, .mark, #challenge-stage");
+                        if (el) return el;
+                        for (let node of root.querySelectorAll("*")) {
+                            if (node.shadowRoot) {
+                                let res = findTarget(node.shadowRoot);
+                                if (res) return res;
+                            }
+                        }
+                        return null;
+                    }
+                    let target = findTarget(document);
+                    if (target) {
+                        target.click();
+                        return true;
+                    }
+                    return false;
+                }
+                """
+                res = await frame.evaluate(js_click)
+                if res:
+                    print("🎯 [Shadow-DOM穿透成功] 成功触发内部 Checkbox 点击！")
+                    return True
+            except Exception:
+                pass
+
+            # 若 JS 未直接命中，使用 Playwright 选择器（排除 body）
+            for sel in ["input[type='checkbox']", ".ctp-checkbox-label", "#challenge-stage", "label"]:
                 try:
                     target = frame.locator(sel).first
-                    if await target.count() > 0:
+                    if await target.count() > 0 and await target.is_visible():
                         await target.hover()
-                        await asyncio.sleep(0.3)
-                        await target.click(timeout=2000)
-                        print(f"🎯 [Frame原生点击成功] 命中选择器: {sel}")
+                        await asyncio.sleep(0.2)
+                        await target.click(timeout=1500)
+                        print(f"🎯 [Frame选择器命中] 成功点击: {sel}")
                         return True
                 except Exception:
                     pass
 
-    # 方法 2: 通过 frame_locator 穿透
-    try:
-        cf = page.frame_locator("iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile']").first
-        chk = cf.locator("input[type='checkbox'], .ctp-checkbox-label, #challenge-stage").first
-        if await chk.count() > 0:
-            await chk.click(timeout=2000)
-            print("🎯 [FrameLocator 穿透成功]")
-            return True
-    except Exception:
-        pass
-
-    # 方法 3: 弹窗中心精准坐标模拟
+    # 2. 备用策略：根据弹窗位置精确点击左侧复选框
     try:
         modal = page.locator("div:has-text('Vérification rapide')").last
         if await modal.is_visible():
@@ -65,15 +87,15 @@ async def try_click_turnstile(page):
             if box:
                 target_x = box["x"] + (box["width"] * 0.22)
                 target_y = box["y"] + (box["height"] * 0.58)
-                print(f"🎯 [物理坐标点击]: ({target_x:.1f}, {target_y:.1f})")
+                print(f"🎯 [备用物理点击]: ({target_x:.1f}, {target_y:.1f})")
                 await page.mouse.move(target_x, target_y)
                 await asyncio.sleep(0.3)
                 await page.mouse.click(target_x, target_y)
-                return True
+                clicked = True
     except Exception:
         pass
 
-    return False
+    return clicked
 
 async def run():
     print("🚀 正在以真实有头模式启动 Camoufox 反检测内核...")
@@ -92,8 +114,18 @@ async def run():
         await context.add_cookies(cookies)
         page = await context.new_page()
 
-        # 监听所有网络响应，观察是否有续期 API 返回
-        page.on("response", lambda res: print(f"🌐 [网络响应] {res.status} {res.url[:70]}") if "renew" in res.url.lower() or "service" in res.url.lower() else None)
+        renew_success_event = asyncio.Event()
+
+        # 监听续期接口的返回状态
+        async def on_response(res):
+            url = res.url.lower()
+            if "renew_free_service.php" in url or "renew" in url:
+                print(f"🌐 [接口响应] HTTP {res.status} {res.url}")
+                if res.status == 200:
+                    print("🎉🎉🎉 后台 renew 接口已返回 HTTP 200 成功响应！")
+                    renew_success_event.set()
+
+        page.on("response", lambda res: asyncio.create_task(on_response(res)))
 
         print("1. 正在访问服务管理页面...")
         await page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
@@ -131,27 +163,28 @@ async def run():
             await asyncio.sleep(4)
 
             await page.screenshot(path="after_click.png", full_page=True)
-            print("🛡️ 正在探测并穿透 Cloudflare Turnstile 验证框...")
+            print("🛡️ 正在精准穿透并点击 Cloudflare Turnstile 复选框...")
 
-            verified = False
             for i in range(12):
+                if renew_success_event.is_set():
+                    break
+
                 print(f"⏳ 正在处理人机验证 ({i+1}/12)...")
-                await try_click_turnstile(page)
+                await click_turnstile_precisely(page)
                 await asyncio.sleep(3)
 
-                # 检查验证弹窗是否已关闭
                 modal = page.locator("div:has-text('Vérification rapide')")
                 if await modal.count() == 0 or not await modal.first.is_visible():
-                    print("🎉🎉 Cloudflare 验证完全通过！弹窗已自动关闭！")
-                    verified = True
+                    print("🎉🎉 Cloudflare 验证通过，弹窗已自动关闭！")
                     break
 
             await page.screenshot(path="cf_clicked.png", full_page=True)
 
-            if not verified:
-                print("⚠️ 正在重新刷新页面验证后台状态...")
-
-            await asyncio.sleep(5)
+            # 等待接口响应
+            try:
+                await asyncio.wait_for(renew_success_event.wait(), timeout=6)
+            except asyncio.TimeoutError:
+                pass
 
             # 重新加载服务列表页验证最终状态
             print("2. 正在刷新服务列表页验证最新状态...")
@@ -163,7 +196,7 @@ async def run():
             print(f"📅 刷新后最新日期: {new_dates}")
 
             if "Renouvelable dans" in new_text:
-                print("🎉🎉🎉 续期大成功！服务已成功顺延并进入下一次倒计时！")
+                print("🎉🎉🎉 续期大成功！服务已成功顺延并重新进入倒计时！")
             elif old_dates != new_dates:
                 print(f"🎉🎉🎉 续期大成功！到期时间已更新: {old_dates} ➔ {new_dates}")
             else:
