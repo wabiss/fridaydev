@@ -60,17 +60,31 @@ async def trigger_turnstile_box(page):
         pass
     return False
 
+async def safe_goto(page, url, retries=3):
+    """带自动重试的安全页面跳转"""
+    for attempt in range(1, retries + 1):
+        try:
+            print(f"🌐 正在打开页面 (尝试 {attempt}/{retries}): {url}...")
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            return True
+        except Exception as e:
+            print(f"⚠️ 访问偶发波动: {e}")
+            if attempt == retries:
+                raise e
+            await asyncio.sleep(3)
+    return False
+
 async def run():
-    print("🚀 正在通过本地 SOCKS5 住宅代理启动 Camoufox 内核...")
+    print("🚀 正在通过本地 HTTP 住宅代理隧道启动 Camoufox 内核...")
     
-    # 修复：移除 geoip=True，保持纯净稳定启动
+    # 使用稳定性最高的 http 代理通道，由本地 sing-box 统筹远端 DNS 与链路
     async with AsyncCamoufox(
         headless=False,
         humanize=True,
         os="windows",
         disable_coop=True,
         i_know_what_im_doing=True,
-        proxy={"server": "socks5://127.0.0.1:1080"}
+        proxy={"server": "http://127.0.0.1:1080"}
     ) as browser:
         context = await browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -94,7 +108,7 @@ async def run():
         page.on("response", lambda res: asyncio.create_task(on_response(res)))
 
         print("1. 正在访问服务管理页面...")
-        await page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
+        await safe_goto(page, "https://fridaydev.fr/services/")
         await asyncio.sleep(5)
 
         page_text = await page.inner_text("body")
@@ -155,7 +169,7 @@ async def run():
 
             # 重新加载服务列表页验证最终状态
             print("2. 正在刷新服务列表页验证最新状态...")
-            await page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
+            await safe_goto(page, "https://fridaydev.fr/services/")
             await asyncio.sleep(6)
 
             new_text = await page.inner_text("body")
