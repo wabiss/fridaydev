@@ -65,15 +65,9 @@ def click_turnstile_challenge(page):
 
 def run():
     print("🚀 正在启动 Camoufox 反检测浏览器内核...")
-    with Camoufox(
-        headless=True,
-        humanize=True,
-        screen={"width": 1920, "height": 1080}
-    ) as browser:
-        context = browser.new_context(
-            viewport={"width": 1920, "height": 1080},
-            locale="fr-FR"
-        )
+    # 修复：移除导致报错的 screen 参数，由 Camoufox 自动生成真实设备指纹
+    with Camoufox(headless=True, os="windows") as browser:
+        context = browser.new_context(locale="fr-FR")
 
         context.add_cookies(cookies)
         page = context.new_page()
