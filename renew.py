@@ -2,7 +2,7 @@ import os
 import re
 import sys
 import time
-from playwright.sync_api import sync_playwright
+from camoufox.sync_api import Camoufox
 
 COOKIE_STR = os.environ.get("COOKIE")
 
@@ -30,50 +30,32 @@ def extract_dates(page):
         return []
 
 def click_turnstile_challenge(page):
-    """三重策略：精准点击 Cloudflare Turnstile 复选框"""
-    # 策略 1: 扫描页面上所有可见的 iframe
-    all_iframes = page.locator("iframe").all()
-    for frame in all_iframes:
+    """物理坐标精准点击 Cloudflare Turnstile 复选框"""
+    # 策略 1: 扫描可见 iframe
+    for frame in page.locator("iframe").all():
         try:
             if frame.is_visible():
                 box = frame.bounding_box()
-                if box and box["width"] > 100 and box["height"] > 30:
-                    # 复选框位于 iframe 内部左侧约 30px
+                if box and box["width"] > 80 and box["height"] > 25:
                     click_x = box["x"] + 30
                     click_y = box["y"] + (box["height"] / 2)
-                    print(f"🎯 [策略1-Iframe] 锁定验证框坐标: ({click_x:.1f}, {click_y:.1f})，正在模拟真实鼠标点击...")
+                    print(f"🎯 [定位成功] 验证框坐标: ({click_x:.1f}, {click_y:.1f})，模拟真人点击...")
                     page.mouse.move(click_x - 30, click_y - 20)
-                    time.sleep(0.2)
+                    time.sleep(0.3)
                     page.mouse.click(click_x, click_y)
                     return True
         except Exception:
             pass
 
-    # 策略 2: 扫描包含 turnstile/cf- 的验证容器
-    cf_containers = page.locator("[class*='turnstile'], [class*='cf-'], [data-sitekey]").all()
-    for container in cf_containers:
-        try:
-            if container.is_visible():
-                box = container.bounding_box()
-                if box and box["width"] > 100:
-                    click_x = box["x"] + 30
-                    click_y = box["y"] + (box["height"] / 2)
-                    print(f"🎯 [策略2-容器] 锁定验证容器坐标: ({click_x:.1f}, {click_y:.1f})，正在点击...")
-                    page.mouse.click(click_x, click_y)
-                    return True
-        except Exception:
-            pass
-
-    # 策略 3: 兜底方案 - 直接定位弹窗几何中心的人机验证区域
+    # 策略 2: 弹窗中心区域点击
     modal = page.locator("div:has-text('Vérification rapide')").last
     try:
         if modal.is_visible():
             box = modal.bounding_box()
             if box:
-                # 弹窗内验证框大致位于弹窗水平偏左、垂直居中偏下的位置
                 click_x = box["x"] + (box["width"] * 0.35)
                 click_y = box["y"] + (box["height"] * 0.58)
-                print(f"🎯 [策略3-弹窗定位] 针对弹窗区域点击: ({click_x:.1f}, {click_y:.1f})...")
+                print(f"🎯 [弹窗兜底] 点击验证区域: ({click_x:.1f}, {click_y:.1f})...")
                 page.mouse.click(click_x, click_y)
                 return True
     except Exception:
@@ -82,36 +64,21 @@ def click_turnstile_challenge(page):
     return False
 
 def run():
-    with sync_playwright() as p:
-        print("🚀 启动反检测浏览器...")
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-infobars",
-                "--window-size=1920,1080"
-            ]
-        )
+    print("🚀 正在启动 Camoufox 反检测浏览器内核...")
+    with Camoufox(
+        headless=True,
+        humanize=True,
+        screen={"width": 1920, "height": 1080}
+    ) as browser:
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080},
             locale="fr-FR"
         )
 
-        # 伪装真人浏览器环境
-        context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            window.chrome = { runtime: {} };
-            Object.defineProperty(navigator, 'languages', { get: () => ['fr-FR', 'fr', 'en-US', 'en'] });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-        """)
-
         context.add_cookies(cookies)
         page = context.new_page()
 
-        print("1. 正在访问服务页面...")
+        print("1. 正在访问服务管理页面...")
         page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
         time.sleep(5)
 
@@ -119,12 +86,11 @@ def run():
         if "Mes services" not in page_text and "wabiss" not in page_text:
             print("❌ Cookie 已失效，请更新 Secrets 中的 COOKIE")
             page.screenshot(path="result.png", full_page=True)
-            browser.close()
             sys.exit(1)
 
-        print("✅ Cookie 有效，进入后台！")
+        print("✅ 成功进入服务管理后台！")
 
-        # 自动关闭 Cookie 提示条
+        # 自动同意 Cookie 弹窗
         try:
             accept_btn = page.locator("button:has-text('Accepter')")
             if accept_btn.count() > 0 and accept_btn.first.is_visible():
@@ -134,9 +100,9 @@ def run():
             pass
 
         old_dates = extract_dates(page)
-        print(f"📅 点击前页面日期: {old_dates}")
+        print(f"📅 当前到期时间: {old_dates}")
 
-        # 锁定续期按钮
+        # 定位续期按钮
         renew_btn = page.locator("button, a").filter(
             has_text=re.compile(r"Renouveler\s+gratuitement", re.I)
         )
@@ -149,28 +115,26 @@ def run():
 
             page.screenshot(path="after_click.png", full_page=True)
 
-            print("🛡️ 正在攻克 Cloudflare Turnstile 人机验证...")
+            print("🛡️ 正在通过 Cloudflare Turnstile 验证...")
 
             # 轮询点击并等待验证通过
             verified = False
-            for i in range(15):
-                print(f"⏳ 正在处理验证第 ({i+1}/15) 次尝试...")
-                
-                # 触发多重精准定位点击
-                hit = click_turnstile_challenge(page)
+            for i in range(12):
+                print(f"⏳ 正在处理人机验证 ({i+1}/12)...")
+                click_turnstile_challenge(page)
                 time.sleep(3)
 
-                # 检查弹窗是否已经成功关闭
+                # 检查验证弹窗是否消失
                 modal = page.locator("div:has-text('Vérification rapide')")
                 if modal.count() == 0 or not modal.first.is_visible():
-                    print("🎉🎉 Cloudflare 验证通过！弹窗已自动关闭并提交！")
+                    print("🎉🎉 Cloudflare 验证完全通过！弹窗已自动关闭并提交！")
                     verified = True
                     break
 
             page.screenshot(path="cf_clicked.png", full_page=True)
 
             if not verified:
-                print("⚠️ 验证可能已在后台完成，正在刷新页面检查最新状态...")
+                print("⚠️ 验证可能已在后台完成，正在刷新页面检查结果...")
 
             time.sleep(5)
 
@@ -181,14 +145,14 @@ def run():
 
             new_dates = extract_dates(page)
             new_page_text = page.inner_text("body")
-            print(f"📅 刷新后页面日期: {new_dates}")
+            print(f"📅 刷新后最新日期: {new_dates}")
 
             if "Renouvelable dans" in new_page_text:
-                print("🎉🎉🎉 续期大成功！服务已恢复并进入倒计时！")
+                print("🎉🎉🎉 续期大成功！服务已成功续期并重新进入倒计时！")
             elif old_dates != new_dates:
-                print(f"🎉🎉🎉 续期成功！到期时间已从 {old_dates} 更新至 {new_dates}")
+                print(f"🎉🎉🎉 续期大成功！到期时间已更新: {old_dates} ➔ {new_dates}")
             else:
-                print("ℹ️ 流程执行完毕，请查看生成的截图确认具体状态。")
+                print("ℹ️ 流程执行完毕，请查看生成的截图确认最新状态。")
 
         else:
             not_yet = page.locator("text=/Renouvelable dans/i")
@@ -199,7 +163,6 @@ def run():
 
         page.screenshot(path="result.png", full_page=True)
         print("📸 最终截图已保存至 result.png")
-        browser.close()
 
 if __name__ == "__main__":
     run()
