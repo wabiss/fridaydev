@@ -29,14 +29,11 @@ def extract_dates(text):
         return []
 
 async def click_turnstile_precisely(page):
-    """通过 Shadow-DOM 递归穿透 + 坐标精准触发 Cloudflare Turnstile 复选框"""
-    clicked = False
-
-    # 1. 扫描所有 Cloudflare Frame，并递归 Shadow Root 寻找 Checkbox
+    """精准触发 Cloudflare Turnstile 复选框"""
+    # 策略 1: 扫描所有 Cloudflare Frame，并递归 Shadow Root 寻找真实 Checkbox
     for frame in page.frames:
         if "challenges.cloudflare.com" in frame.url:
             try:
-                # 注入 JS 深度递归 Shadow DOM 寻找真实点击靶点
                 js_click = """
                 () => {
                     function findTarget(root) {
@@ -61,12 +58,11 @@ async def click_turnstile_precisely(page):
                 """
                 res = await frame.evaluate(js_click)
                 if res:
-                    print("🎯 [Shadow-DOM穿透成功] 成功触发内部 Checkbox 点击！")
+                    print("🎯 [Shadow-DOM穿透成功] 成功触发内部复选框点击！")
                     return True
             except Exception:
                 pass
 
-            # 若 JS 未直接命中，使用 Playwright 选择器（排除 body）
             for sel in ["input[type='checkbox']", ".ctp-checkbox-label", "#challenge-stage", "label"]:
                 try:
                     target = frame.locator(sel).first
@@ -79,7 +75,7 @@ async def click_turnstile_precisely(page):
                 except Exception:
                     pass
 
-    # 2. 备用策略：根据弹窗位置精确点击左侧复选框
+    # 策略 2: 弹窗物理坐标绝对模拟
     try:
         modal = page.locator("div:has-text('Vérification rapide')").last
         if await modal.is_visible():
@@ -87,15 +83,15 @@ async def click_turnstile_precisely(page):
             if box:
                 target_x = box["x"] + (box["width"] * 0.22)
                 target_y = box["y"] + (box["height"] * 0.58)
-                print(f"🎯 [备用物理点击]: ({target_x:.1f}, {target_y:.1f})")
+                print(f"🎯 [物理坐标轻点]: ({target_x:.1f}, {target_y:.1f})")
                 await page.mouse.move(target_x, target_y)
                 await asyncio.sleep(0.3)
                 await page.mouse.click(target_x, target_y)
-                clicked = True
+                return True
     except Exception:
         pass
 
-    return clicked
+    return False
 
 async def run():
     print("🚀 正在以真实有头模式启动 Camoufox 反检测内核...")
@@ -116,13 +112,13 @@ async def run():
 
         renew_success_event = asyncio.Event()
 
-        # 监听续期接口的返回状态
+        # 关键修复：严格只监听真正的后端 renew_free_service.php 接口，坚决排除静态 .js 文件！
         async def on_response(res):
             url = res.url.lower()
-            if "renew_free_service.php" in url or "renew" in url:
-                print(f"🌐 [接口响应] HTTP {res.status} {res.url}")
+            if "renew_free_service.php" in url:
+                print(f"🌐 [核心接口响应] HTTP {res.status} {res.url}")
                 if res.status == 200:
-                    print("🎉🎉🎉 后台 renew 接口已返回 HTTP 200 成功响应！")
+                    print("🎉🎉🎉 后端续期接口正式返回 HTTP 200 成功响应！")
                     renew_success_event.set()
 
         page.on("response", lambda res: asyncio.create_task(on_response(res)))
@@ -159,14 +155,18 @@ async def run():
         if await renew_btn.count() > 0 and await renew_btn.first.is_visible():
             target_text = (await renew_btn.first.inner_text()).strip()
             print(f"🎉 正在点击续期按钮: 【{target_text}】...")
+            
+            # 点击续费按钮
             await renew_btn.first.click()
             await asyncio.sleep(4)
 
             await page.screenshot(path="after_click.png", full_page=True)
-            print("🛡️ 正在精准穿透并点击 Cloudflare Turnstile 复选框...")
+            print("🛡️ 正在精准穿透并处理 Cloudflare Turnstile 验证...")
 
+            # 真正进入人机验证等待循环
             for i in range(12):
                 if renew_success_event.is_set():
+                    print("🎉 已检测到续期成功信号，退出验证循环！")
                     break
 
                 print(f"⏳ 正在处理人机验证 ({i+1}/12)...")
@@ -180,7 +180,7 @@ async def run():
 
             await page.screenshot(path="cf_clicked.png", full_page=True)
 
-            # 等待接口响应
+            # 等待接口最终确认
             try:
                 await asyncio.wait_for(renew_success_event.wait(), timeout=6)
             except asyncio.TimeoutError:
