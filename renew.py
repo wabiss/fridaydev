@@ -3,7 +3,6 @@ import re
 import sys
 import asyncio
 from camoufox.async_api import AsyncCamoufox
-from playwright_captcha import ClickSolver, CaptchaType, FrameworkType
 
 COOKIE_STR = os.environ.get("COOKIE")
 
@@ -22,16 +21,62 @@ for item in COOKIE_STR.split(";"):
             "path": "/"
         })
 
-async def extract_dates(page):
+def extract_dates(text):
     """提取页面所有有效日期"""
     try:
-        text = await page.inner_text("body")
         return re.findall(r"\b\d{2}/\d{2}/\d{4}\b", text)
     except Exception:
         return []
 
+async def try_click_turnstile(page):
+    """原生穿透点击 Cloudflare Turnstile 复选框"""
+    # 方法 1: 扫描所有动态生成的 Frame
+    for frame in page.frames:
+        if "challenges.cloudflare.com" in frame.url:
+            print(f"👉 探测到 Cloudflare 动态 Frame: {frame.url[:50]}...")
+            for sel in ["input[type='checkbox']", ".ctp-checkbox-label", "#challenge-stage", "label", "body"]:
+                try:
+                    target = frame.locator(sel).first
+                    if await target.count() > 0:
+                        await target.hover()
+                        await asyncio.sleep(0.3)
+                        await target.click(timeout=2000)
+                        print(f"🎯 [Frame原生点击成功] 命中选择器: {sel}")
+                        return True
+                except Exception:
+                    pass
+
+    # 方法 2: 通过 frame_locator 穿透
+    try:
+        cf = page.frame_locator("iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile']").first
+        chk = cf.locator("input[type='checkbox'], .ctp-checkbox-label, #challenge-stage").first
+        if await chk.count() > 0:
+            await chk.click(timeout=2000)
+            print("🎯 [FrameLocator 穿透成功]")
+            return True
+    except Exception:
+        pass
+
+    # 方法 3: 弹窗中心精准坐标模拟
+    try:
+        modal = page.locator("div:has-text('Vérification rapide')").last
+        if await modal.is_visible():
+            box = await modal.bounding_box()
+            if box:
+                target_x = box["x"] + (box["width"] * 0.22)
+                target_y = box["y"] + (box["height"] * 0.58)
+                print(f"🎯 [物理坐标点击]: ({target_x:.1f}, {target_y:.1f})")
+                await page.mouse.move(target_x, target_y)
+                await asyncio.sleep(0.3)
+                await page.mouse.click(target_x, target_y)
+                return True
+    except Exception:
+        pass
+
+    return False
+
 async def run():
-    print("🚀 正在以 Async 模式启动 Camoufox 反检测内核...")
+    print("🚀 正在以真实有头模式启动 Camoufox 反检测内核...")
     async with AsyncCamoufox(
         headless=False,
         humanize=True,
@@ -47,10 +92,8 @@ async def run():
         await context.add_cookies(cookies)
         page = await context.new_page()
 
-        # 关键步骤：在页面初始化时立即 prepare 注入底层监听
-        print("🤖 初始化 playwright_captcha 求解器环境...")
-        solver = ClickSolver(framework=FrameworkType.CAMOUFOX, page=page)
-        await solver.prepare()
+        # 监听所有网络响应，观察是否有续期 API 返回
+        page.on("response", lambda res: print(f"🌐 [网络响应] {res.status} {res.url[:70]}") if "renew" in res.url.lower() or "service" in res.url.lower() else None)
 
         print("1. 正在访问服务管理页面...")
         await page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
@@ -68,12 +111,12 @@ async def run():
         try:
             accept_btn = page.locator("button:has-text('Accepter')")
             if await accept_btn.count() > 0 and await accept_btn.first.is_visible():
-                await accept_btn.first.click()
+                await accept_btn.click()
                 await asyncio.sleep(1)
         except Exception:
             pass
 
-        old_dates = await extract_dates(page)
+        old_dates = extract_dates(page_text)
         print(f"📅 点击前页面日期: {old_dates}")
 
         # 锁定续期按钮
@@ -85,50 +128,41 @@ async def run():
             target_text = (await renew_btn.first.inner_text()).strip()
             print(f"🎉 正在点击续期按钮: 【{target_text}】...")
             await renew_btn.first.click()
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)
 
             await page.screenshot(path="after_click.png", full_page=True)
-            print("🛡️ 正在调用专业引擎求解 Cloudflare Turnstile...")
+            print("🛡️ 正在探测并穿透 Cloudflare Turnstile 验证框...")
 
             verified = False
-            for i in range(10):
-                print(f"⏳ 正在执行人机验证异步求解 ({i+1}/10)...")
-                try:
-                    # 调用已经 prepare 过的 solver 进行求解
-                    await solver.solve_captcha(
-                        captcha_container=page, 
-                        captcha_type=CaptchaType.CLOUDFLARE_TURNSTILE
-                    )
-                    print("🎯 求解指令已发送！")
-                except Exception as e:
-                    print(f"ℹ️ 求解器提示: {e}")
-
+            for i in range(12):
+                print(f"⏳ 正在处理人机验证 ({i+1}/12)...")
+                await try_click_turnstile(page)
                 await asyncio.sleep(3)
 
-                # 检查验证弹窗是否已消失（消失表示验证通过并提交）
+                # 检查验证弹窗是否已关闭
                 modal = page.locator("div:has-text('Vérification rapide')")
                 if await modal.count() == 0 or not await modal.first.is_visible():
-                    print("🎉🎉 Cloudflare 验证通过！弹窗已自动关闭并提交！")
+                    print("🎉🎉 Cloudflare 验证完全通过！弹窗已自动关闭！")
                     verified = True
                     break
 
             await page.screenshot(path="cf_clicked.png", full_page=True)
 
             if not verified:
-                print("⚠️ 正在重新加载页面以确认后台状态...")
+                print("⚠️ 正在重新刷新页面验证后台状态...")
 
             await asyncio.sleep(5)
 
             # 重新加载服务列表页验证最终状态
-            print("2. 正在重新加载服务列表页验证结果...")
+            print("2. 正在刷新服务列表页验证最新状态...")
             await page.goto("https://fridaydev.fr/services/", wait_until="domcontentloaded", timeout=60000)
             await asyncio.sleep(6)
 
-            new_dates = await extract_dates(page)
-            new_page_text = await page.inner_text("body")
+            new_text = await page.inner_text("body")
+            new_dates = extract_dates(new_text)
             print(f"📅 刷新后最新日期: {new_dates}")
 
-            if "Renouvelable dans" in new_page_text:
+            if "Renouvelable dans" in new_text:
                 print("🎉🎉🎉 续期大成功！服务已成功顺延并进入下一次倒计时！")
             elif old_dates != new_dates:
                 print(f"🎉🎉🎉 续期大成功！到期时间已更新: {old_dates} ➔ {new_dates}")
